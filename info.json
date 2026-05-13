@@ -1,0 +1,11 @@
+{
+    "title": "Tor Manager",
+    "name": "tor_manager",
+    "ps": "Manage Tor hidden services, onion addresses, and torrc configuration",
+    "versions": "2.6",
+    "checks": "/www/server/panel/plugin/tor_manager",
+    "author": "Custom",
+    "home": "",
+    "type": 0,
+    "pid": "0"
+}
