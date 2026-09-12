@@ -1,10 +1,10 @@
 {
     "title": "Tor Manager",
     "name": "tor_manager",
-    "ps": "Manage Tor hidden services, onion addresses, and torrc configuration",
-    "versions": "2.6",
+    "ps": "Manage Tor hidden services, onion addresses, torrc configuration, and web server switching",
+    "versions": "3.4",
     "checks": "/www/server/panel/plugin/tor_manager",
-    "author": "Custom",
+    "author": "Impreza Host",
     "home": "",
     "type": 0,
     "pid": "0"

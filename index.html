@@ -2,8 +2,8 @@
 <style>
 /* ===== MAIN LAYOUT - CONTAINED INSIDE AAPANEL DIALOG ===== */
 .tor-plugin { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #333; padding: 0; box-sizing: border-box; }
-.tor-tabs { display: flex; border-bottom: 2px solid #eee; padding: 0 15px; background: #fafafa; align-items: center; }
-.tor-tab { padding: 10px 18px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; font-size: 13px; color: #666; transition: all .2s; white-space: nowrap; }
+.tor-tabs { display: flex; border-bottom: 2px solid #eee; padding: 0 15px 0 15px; background: #fafafa; align-items: center; gap: 2px; overflow-x: auto; }
+.tor-tab { padding: 10px 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; font-size: 13px; color: #666; transition: all .2s; white-space: nowrap; }
 .tor-tab:hover { color: #6c3b9e; }
 .tor-tab.active { color: #6c3b9e; border-bottom-color: #6c3b9e; font-weight: 600; }
 .tor-pane { display: none; padding: 15px; }
@@ -113,6 +113,8 @@ select.tor-config-input { max-width: 200px; }
     <div class="tor-tab" data-tab="control">&#9881; Control</div>
     <div class="tor-tab" data-tab="config">&#128295; Config</div>
     <div class="tor-tab" data-tab="editor">&#128196; Editor</div>
+    <div class="tor-tab" data-tab="webserver">&#128259; Web Server</div>
+    <div class="tor-tab" data-tab="balance">&#9878; Balance</div>
     <div class="tor-tab" data-tab="logs">&#128203; Logs</div>
 </div>
 
@@ -145,6 +147,32 @@ select.tor-config-input { max-width: 200px; }
         <div style="display:flex;gap:4px;">
             <button class="tor-btn tor-btn-success tor-btn-sm" onclick="TorMgr.showCreateDomain()">+ New Domain</button>
             <button class="tor-btn tor-btn-primary tor-btn-sm" onclick="TorMgr.showVanityPanel()">&#9733; Custom Domain</button>
+            <button class="tor-btn tor-btn-outline tor-btn-sm" onclick="TorMgr.showRestorePanel()">&#128228; Restore Backup</button>
+        </div>
+    </div>
+    <!-- Restore from backup (hidden by default) -->
+    <div id="domain_restore_form" style="display:none;" class="tor-card">
+        <div style="margin-bottom:10px;font-weight:600;font-size:14px;">&#128228; Restore Hidden Service from Backup</div>
+        <div style="margin-bottom:8px;">
+            <label style="display:block;font-size:12px;color:#666;margin-bottom:3px;">Backup archive</label>
+            <input type="file" id="restore_file" accept=".gz,.tgz,application/gzip,application/x-gzip" onchange="TorMgr.inspectBackup()" style="font-size:12px;">
+            <div style="font-size:11px;color:#999;margin-top:3px;">The <code>.tar.gz</code> produced by <b>Download Keys</b>. Nothing is written until you confirm.</div>
+        </div>
+        <div id="restore_inspect" style="display:none;margin:10px 0;padding:10px;border-radius:4px;font-size:12px;"></div>
+        <div id="restore_details" style="display:none;">
+            <div style="margin-bottom:8px;">
+                <label style="display:block;font-size:12px;color:#666;margin-bottom:3px;">Service Name (directory under /var/lib/tor)</label>
+                <input type="text" id="restore_domain_name" class="tor-config-input" placeholder="my_service" style="max-width:300px;">
+            </div>
+            <div style="margin-bottom:8px;">
+                <label style="display:block;font-size:12px;color:#666;margin-bottom:3px;">Port Mapping (one per line)</label>
+                <textarea id="restore_domain_ports" class="tor-config-input" rows="3" style="font-family:'Courier New',monospace;"></textarea>
+                <div style="font-size:11px;color:#999;margin-top:3px;">Format: VIRTUAL_PORT TARGET_HOST:TARGET_PORT — Example: <code>80 127.0.0.1:80</code></div>
+            </div>
+        </div>
+        <div style="display:flex;gap:6px;">
+            <button class="tor-btn tor-btn-primary tor-btn-sm" id="restore_submit" onclick="TorMgr.restoreDomain()" disabled>Restore &amp; Restart Tor</button>
+            <button class="tor-btn tor-btn-outline tor-btn-sm" onclick="TorMgr.hideRestorePanel()">Cancel</button>
         </div>
     </div>
     <!-- Create domain form (hidden by default) -->
@@ -300,6 +328,11 @@ select.tor-config-input { max-width: 200px; }
 </div>
 
 <!-- LOGS PANE -->
+<div class="tor-pane" id="pane_balance">
+    <div class="tor-section-title">OnionBalance &mdash; high availability for one .onion address</div>
+    <div id="ob_body"><div class="tor-loading"><span class="tor-spin"></span> Checking...</div></div>
+</div>
+
 <div class="tor-pane" id="pane_logs">
     <div style="margin-bottom:10px;">
         <button class="tor-btn tor-btn-primary tor-btn-sm" onclick="TorMgr.loadLogs()">&#8635; Refresh</button>
@@ -312,6 +345,46 @@ select.tor-config-input { max-width: 200px; }
     </div>
     <div class="tor-log-box" id="log_content">Click Refresh to load logs...</div>
     <div id="log_source" style="margin-top:6px;font-size:11px;color:#888;"></div>
+</div>
+
+<div class="tor-pane" id="pane_webserver">
+    <h3 style="margin-top:0;margin-bottom:15px;font-size:15px;">Web Server Management</h3>
+    <div id="ws_status_area">
+        <div class="tor-status-grid">
+            <div class="tor-card">
+                <div class="tor-card-title">Current Web Server</div>
+                <div class="tor-card-value" id="ws_current">Loading...</div>
+            </div>
+            <div class="tor-card">
+                <div class="tor-card-title">phpMyAdmin</div>
+                <div class="tor-card-value" id="ws_pma">Loading...</div>
+            </div>
+            <div class="tor-card">
+                <div class="tor-card-title">Nginx</div>
+                <div class="tor-card-value" id="ws_nginx_info">Loading...</div>
+            </div>
+            <div class="tor-card">
+                <div class="tor-card-title">Apache</div>
+                <div class="tor-card-value" id="ws_apache_info">Loading...</div>
+            </div>
+        </div>
+        <div id="ws_switch_area" style="margin-top:15px;">
+            <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px;margin-bottom:12px;">
+                <strong>Warning:</strong> Switching web servers will install the new server, migrate site configs, reinstall phpMyAdmin, and stop the old server. This takes several minutes. Sites may be briefly unavailable.
+            </div>
+            <button class="tor-btn tor-btn-primary" id="ws_switch_btn" onclick="TorMgr.switchWebserver()" disabled>Switch to <span id="ws_switch_target">...</span></button>
+            <button class="tor-btn tor-btn-outline tor-btn-sm" onclick="TorMgr.loadWebserverStatus()" style="margin-left:8px;">&#8635; Refresh</button>
+        </div>
+        <div id="ws_progress_area" style="display:none;margin-top:15px;">
+            <div style="background:#d1ecf1;border:1px solid #bee5eb;border-radius:8px;padding:12px;">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+                    <div class="tor-spinner" style="width:18px;height:18px;border:2px solid #0c5460;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>
+                    <strong id="ws_progress_step">Switching...</strong>
+                </div>
+                <pre id="ws_progress_log" style="max-height:200px;overflow-y:auto;font-size:12px;background:#f8f9fa;padding:8px;border-radius:4px;margin:0;white-space:pre-wrap;"></pre>
+            </div>
+        </div>
+    </div>
 </div>
 
 </div><!-- /tor-body -->
@@ -358,6 +431,8 @@ $('#tor_tabs').on('click', '.tor-tab', function() {
     if (tab === 'config') TorMgr.loadConfig();
     if (tab === 'editor') TorMgr.loadFileList();
     if (tab === 'logs') TorMgr.loadLogs();
+    if (tab === 'webserver') TorMgr.loadWebserverStatus();
+    if (tab === 'balance') TorMgr.loadBalance();
 });
 
 // ===== STATUS =====
@@ -533,6 +608,9 @@ TorMgr.loadDomains = function() {
             } else {
                 h += ' <span class="tor-domain-badge tor-domain-badge-wait">Pending</span>';
             }
+            if (dm.restricted) {
+                h += ' <span class="tor-domain-badge" style="background:#5b3fd6;color:#fff;" title="Only clients holding an authorised key can reach this service">&#128274; ' + dm.client_count + ' client' + (dm.client_count === 1 ? '' : 's') + '</span>';
+            }
             h += '<div class="tor-domain-dir">' + dm.dir + '</div></div>';
             h += '</div>';
             if (dm.hostname) {
@@ -553,6 +631,13 @@ TorMgr.loadDomains = function() {
             h += '<div class="tor-domain-actions">';
             if (dm.has_keys) {
                 h += '<button class="tor-btn tor-btn-outline tor-btn-sm" onclick="TorMgr.downloadKeys(\'' + dm.dir + '\', \'' + dm.name + '\')">&#128229; Download Keys</button>';
+            }
+            if (dm.hostname) {
+                h += '<button class="tor-btn tor-btn-outline tor-btn-sm" onclick="TorMgr.showClientAuth(\'' + dm.dir + '\', \'' + dm.name + '\')">&#128273; Clients' + (dm.client_count ? ' (' + dm.client_count + ')' : '') + '</button>';
+                h += '<button class="tor-btn ' + (dm.circuit_export ? 'tor-btn-success' : 'tor-btn-outline') + ' tor-btn-sm" '
+                   + 'title="Rate-limit per Tor circuit in Onion Guard instead of lumping every visitor into one bucket" '
+                   + 'onclick="TorMgr.toggleCircuitExport(\'' + dm.dir + '\',\'' + dm.name + '\',' + (dm.circuit_export ? 'false' : 'true') + ')">'
+                   + '&#128260; Circuit limiting' + (dm.circuit_export ? ': ON' : '') + '</button>';
             }
             if (dm.hostname) {
                 if (dm.in_panel) {
@@ -577,6 +662,120 @@ TorMgr.showCreateDomain = function() {
 
 TorMgr.hideCreateDomain = function() {
     $('#domain_create_form').slideUp(200);
+};
+
+TorMgr._esc = function(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+};
+
+// ===== RESTORE FROM BACKUP =====
+// Two steps on purpose: inspect first so the operator sees which .onion the
+// archive actually contains before anything is written or Tor is restarted.
+TorMgr._restoreData = '';
+
+TorMgr.showRestorePanel = function() {
+    TorMgr.hideCreateDomain();
+    TorMgr.hideVanityPanel();
+    TorMgr._restoreData = '';
+    $('#restore_file').val('');
+    $('#restore_inspect').hide().empty();
+    $('#restore_details').hide();
+    $('#restore_submit').prop('disabled', true);
+    $('#restore_domain_name').val('');
+    $('#restore_domain_ports').val('80 127.0.0.1:80');
+    $('#domain_restore_form').slideDown(200);
+};
+
+TorMgr.hideRestorePanel = function() {
+    TorMgr._restoreData = '';
+    $('#domain_restore_form').slideUp(200);
+};
+
+TorMgr._restoreNotice = function(html, kind) {
+    var bg = kind === 'ok' ? '#e8f5e9' : (kind === 'warn' ? '#fff8e1' : '#ffebee');
+    var bd = kind === 'ok' ? '#a5d6a7' : (kind === 'warn' ? '#ffe082' : '#ef9a9a');
+    $('#restore_inspect').html(html).css({background: bg, border: '1px solid ' + bd}).show();
+};
+
+TorMgr.inspectBackup = function() {
+    var file = document.getElementById('restore_file').files[0];
+    TorMgr._restoreData = '';
+    $('#restore_details').hide();
+    $('#restore_submit').prop('disabled', true);
+    if (!file) { $('#restore_inspect').hide().empty(); return; }
+
+    var reader = new FileReader();
+    reader.onerror = function() {
+        TorMgr._restoreNotice('Could not read the selected file.', 'err');
+    };
+    reader.onload = function(e) {
+        var b64 = String(e.target.result).split(',')[1] || '';
+        TorMgr._restoreNotice('<span class="tor-spin"></span> Inspecting backup...', 'warn');
+        api('inspect_domain_backup', {data: b64}, function(d) {
+            if (!d || !d.status) {
+                TorMgr._restoreNotice('<b>Rejected:</b> ' + TorMgr._esc(d && d.msg || 'Unreadable backup.'), 'err');
+                return;
+            }
+            TorMgr._restoreData = b64;
+            var i = d.info || {};
+            var h = '<div style="margin-bottom:4px;">This backup contains</div>';
+            h += '<div style="font-family:\'Courier New\',monospace;font-size:13px;font-weight:600;word-break:break-all;margin-bottom:6px;">'
+               + TorMgr._esc(i.address || '(unknown)') + '</div>';
+            h += i.verified
+                ? '<div style="color:#2e7d32;">&#10003; Address verified against the public key in the backup.</div>'
+                : '<div style="color:#ef6c00;">&#9888; Address could not be verified against a public key.</div>';
+            (i.warnings || []).forEach(function(w) {
+                h += '<div style="color:#ef6c00;margin-top:4px;">&#9888; ' + TorMgr._esc(w) + '</div>';
+            });
+            if (i.in_torrc) {
+                h += '<div style="color:#c62828;margin-top:6px;">&#10007; Already served from <code>'
+                   + TorMgr._esc(i.in_torrc) + '</code>. Remove that service before restoring.</div>';
+                TorMgr._restoreNotice(h, 'err');
+                return;
+            }
+            h += '<div style="color:#777;margin-top:6px;">Files: ' + TorMgr._esc((i.files || []).join(', ')) + '</div>';
+            TorMgr._restoreNotice(h, i.verified ? 'ok' : 'warn');
+            $('#restore_details').slideDown(150);
+            $('#restore_submit').prop('disabled', false);
+            if (!$('#restore_domain_name').val() && i.address) {
+                $('#restore_domain_name').val(i.address.replace('.onion', '').slice(0, 16));
+            }
+        });
+    };
+    reader.readAsDataURL(file);
+};
+
+TorMgr.restoreDomain = function() {
+    var name = $('#restore_domain_name').val().trim();
+    var ports = $('#restore_domain_ports').val().trim();
+    if (!TorMgr._restoreData) { layer.msg('Select a backup file first.', {icon:0}); return; }
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) { layer.msg('Name: only letters, numbers, dashes, underscores.', {icon:0}); return; }
+    if (!ports) { layer.msg('Enter at least one port mapping.', {icon:0}); return; }
+
+    layer.confirm('Restore this hidden service as "<b>' + TorMgr._esc(name) + '</b>"?<br><br>'
+        + 'Keys are written to <code>/var/lib/tor/' + TorMgr._esc(name) + '</code>, the service is added to torrc, '
+        + 'and Tor is restarted — which briefly interrupts every hidden service on this host.',
+        {icon:3}, function(idx) {
+        layer.close(idx);
+        layer.msg('Restoring and restarting Tor...', {icon:16, time:40000, shade:.3});
+        api('restore_domain_keys', {svc_name: name, ports: ports, data: TorMgr._restoreData}, function(d) {
+            layer.closeAll();
+            if (!d || !d.status) {
+                layer.alert(TorMgr._esc(d && d.msg || 'Failed.'), {icon:2, title:'Restore Failed'});
+                return;
+            }
+            var msg = TorMgr._esc(d.msg);
+            if (d.hostname) msg += '<br><br>Hostname: <b>' + TorMgr._esc(d.hostname) + '</b>';
+            if (d.backup) msg += '<br><span style="color:#777;font-size:12px;">torrc backup: ' + TorMgr._esc(d.backup) + '</span>';
+            (d.warnings || []).forEach(function(w) {
+                msg += '<br><span style="color:#ef6c00;">&#9888; ' + TorMgr._esc(w) + '</span>';
+            });
+            layer.alert(msg, {icon:1, title:'Service Restored'});
+            TorMgr.hideRestorePanel();
+            TorMgr.loadDomains();
+        }, 60000);
+    });
 };
 
 TorMgr.createDomain = function() {
@@ -687,6 +886,162 @@ var vanityPollTimer = null;
 var vanityJobId = null;
 var vanityStartTime = null;
 var vanityFoundKeysDir = '';
+
+// ===== CIRCUIT EXPORT (per-circuit rate limiting) =====
+TorMgr.toggleCircuitExport = function(dir, name, enable) {
+    var msg = enable
+        ? 'Enable per-circuit rate limiting for "<b>' + TorMgr._esc(name) + '</b>"?<br><br>'
+          + 'This repoints the service at Onion Guard\'s circuit listener (127.0.0.1:7779) and adds '
+          + '<code>HiddenServiceExportCircuitID haproxy</code> to its torrc block. Onion Guard then limits '
+          + 'per Tor circuit instead of counting every visitor against one shared bucket.'
+        : 'Disable per-circuit rate limiting for "<b>' + TorMgr._esc(name) + '</b>"?<br><br>'
+          + 'The original port mapping is restored and Onion Guard goes back to one shared rate-limit bucket '
+          + 'for this service.';
+    msg += '<br><br><span style="color:#c62828;">&#9888; Applying this restarts Tor, which briefly interrupts '
+         + '<b>every</b> hidden service on this host — not just this one.</span>';
+
+    layer.confirm(msg, {icon:3, area:'460px'}, function(idx) {
+        layer.close(idx);
+        layer.msg('Rewriting torrc and restarting Tor...', {icon:16, time:40000, shade:.3});
+        api('set_circuit_export', {dir: dir, enabled: enable ? 'true' : 'false'}, function(d) {
+            layer.closeAll();
+            if (!d || !d.status) {
+                layer.alert(TorMgr._esc((d && d.msg) || 'Failed.'), {icon:2, title:'Circuit Export Failed'});
+                return;
+            }
+            if (d.unchanged) { layer.msg(d.msg, {icon:0}); TorMgr.loadDomains(); return; }
+            var body = TorMgr._esc(d.msg);
+            if (d.backup) body += '<br><span style="color:#777;font-size:12px;">torrc backup: ' + TorMgr._esc(d.backup) + '</span>';
+            if (d.enabled) body += '<br><br><span style="font-size:12px;">Confirm it is working in Onion Guard &rarr; Status: '
+                                 + 'the tracked-circuit count should rise above 1 once traffic arrives.</span>';
+            layer.alert(body, {icon:1, title: d.enabled ? 'Circuit Limiting Enabled' : 'Circuit Limiting Disabled'});
+            TorMgr.loadDomains();
+        }, 60000);
+    });
+};
+
+// ===== V3 CLIENT AUTHORIZATION =====
+// A service with at least one authorised client is unreachable without a key,
+// so every transition in and out of that state is called out explicitly.
+TorMgr._clientLayer = null;
+
+TorMgr.showClientAuth = function(dir, name) {
+    api('list_client_auth', {dir: dir}, function(d) {
+        if (!d || !d.status) {
+            layer.msg((d && d.msg) || 'Failed to load clients.', {icon:2, time:5000});
+            return;
+        }
+        var h = '<div style="padding:14px;font-size:13px;">';
+        h += d.restricted
+            ? '<div class="tor-alert tor-alert-warning" style="margin-bottom:10px;padding:8px 10px;font-size:12px;">'
+              + '&#128274; <b>Restricted.</b> Only the clients below can reach this service. Everyone else cannot even fetch its descriptor.</div>'
+            : '<div class="tor-alert" style="margin-bottom:10px;padding:8px 10px;font-size:12px;background:#e3f2fd;border:1px solid #90caf9;">'
+              + '&#127760; <b>Public.</b> Anyone with the address can reach this service. Adding the first client below will restrict it immediately.</div>';
+
+        if (d.clients.length) {
+            h += '<table class="tor-table" style="width:100%;margin-bottom:10px;"><tbody>';
+            d.clients.forEach(function(c) {
+                h += '<tr><td style="padding:6px 4px;">&#128273; <b>' + TorMgr._esc(c.name) + '</b></td>'
+                   + '<td style="padding:6px 4px;text-align:right;">'
+                   + '<button class="tor-btn tor-btn-danger tor-btn-sm" onclick="TorMgr.revokeClient(\'' + dir + '\',\'' + name + '\',\'' + TorMgr._esc(c.name) + '\')">Revoke</button>'
+                   + '</td></tr>';
+            });
+            h += '</tbody></table>';
+        }
+        if (d.malformed && d.malformed.length) {
+            h += '<div style="color:#ef6c00;font-size:12px;margin-bottom:10px;">&#9888; Ignored unreadable file(s): '
+               + TorMgr._esc(d.malformed.join(', ')) + '</div>';
+        }
+        h += '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;">';
+        h += '<input type="text" id="new_client_name" class="tor-config-input" placeholder="client name (e.g. alice-laptop)" style="flex:1;">';
+        h += '<button class="tor-btn tor-btn-success tor-btn-sm" onclick="TorMgr.addClient(\'' + dir + '\',\'' + name + '\')">+ Authorise</button>';
+        h += '</div>';
+        h += '<div style="font-size:11px;color:#999;margin-top:6px;">The private key is shown once, right after you create the client. It is never stored here.</div>';
+        h += '</div>';
+
+        if (TorMgr._clientLayer !== null) layer.close(TorMgr._clientLayer);
+        TorMgr._clientLayer = layer.open({
+            type: 1, title: 'Client Authorization &mdash; ' + TorMgr._esc(name),
+            area: ['520px', 'auto'], content: h, shadeClose: true,
+            end: function() { TorMgr._clientLayer = null; TorMgr.loadDomains(); }
+        });
+    });
+};
+
+TorMgr.addClient = function(dir, name) {
+    var client = $('#new_client_name').val().trim();
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(client)) {
+        layer.msg('Client name: letters, numbers, dashes, underscores (max 64).', {icon:0});
+        return;
+    }
+    api('add_client_auth', {dir: dir, client_name: client}, function(d) {
+        if (!d || !d.status) {
+            layer.msg((d && d.msg) || 'Failed.', {icon:2, time:5000});
+            return;
+        }
+        if (TorMgr._clientLayer !== null) { layer.close(TorMgr._clientLayer); TorMgr._clientLayer = null; }
+        TorMgr._showClientKey(dir, name, d);
+    });
+};
+
+TorMgr._showClientKey = function(dir, name, d) {
+    var h = '<div style="padding:14px;font-size:13px;">';
+    if (d.first_client) {
+        h += '<div class="tor-alert tor-alert-warning" style="margin-bottom:10px;padding:8px 10px;font-size:12px;">'
+           + '&#128274; <b>This service is now restricted.</b> Visitors without an authorised key can no longer reach '
+           + TorMgr._esc(d.address) + '.</div>';
+    }
+    h += '<div class="tor-alert tor-alert-danger" style="margin-bottom:10px;padding:8px 10px;font-size:12px;">'
+       + '&#9888; <b>Shown once.</b> This private key is not stored anywhere on the server. If you lose it, revoke '
+       + 'this client and issue a new one.</div>';
+    h += '<div style="font-size:12px;color:#666;margin-bottom:4px;">File name</div>';
+    h += '<div style="font-family:\'Courier New\',monospace;font-size:12px;word-break:break-all;background:#f5f5f5;border:1px solid #e0e0e0;border-radius:4px;padding:6px 8px;margin-bottom:10px;">'
+       + TorMgr._esc(d.auth_private_filename) + '</div>';
+    h += '<div style="font-size:12px;color:#666;margin-bottom:4px;">File contents</div>';
+    h += '<textarea id="client_key_body" readonly style="width:100%;height:70px;font-family:\'Courier New\',monospace;font-size:11px;word-break:break-all;border:1px solid #e0e0e0;border-radius:4px;padding:6px 8px;resize:none;">'
+       + TorMgr._esc(d.auth_private) + '</textarea>';
+    h += '<div style="display:flex;gap:6px;margin:10px 0;">';
+    h += '<button class="tor-btn tor-btn-primary tor-btn-sm" onclick="TorMgr.copyText($(\'#client_key_body\').val())">Copy</button>';
+    h += '<button class="tor-btn tor-btn-outline tor-btn-sm" onclick="TorMgr.downloadClientKey()">&#128229; Download .auth_private</button>';
+    h += '</div>';
+    h += '<div style="font-size:12px;color:#666;line-height:1.6;border-top:1px solid #eee;padding-top:10px;">'
+       + '<b>The client installs it by</b> saving this file into their Tor <code>ClientOnionAuthDir</code> '
+       + '(commonly <code>~/.tor/onion_auth</code>, or <code>&lt;TorBrowser&gt;/Browser/TorBrowser/Data/Tor/onion-auth</code>), '
+       + 'then restarting Tor. Send it over a channel you trust — anyone holding this file can reach the service.</div>';
+    h += '</div>';
+
+    TorMgr._pendingKey = {name: d.auth_private_filename, body: d.auth_private + '\n'};
+    layer.open({
+        type: 1, title: 'Private key for &quot;' + TorMgr._esc(d.name) + '&quot;',
+        area: ['560px', 'auto'], content: h, shadeClose: false,
+        end: function() { TorMgr._pendingKey = null; TorMgr.showClientAuth(dir, name); }
+    });
+};
+
+TorMgr.downloadClientKey = function() {
+    var k = TorMgr._pendingKey;
+    if (!k) { layer.msg('Nothing to download.', {icon:0}); return; }
+    var blob = new Blob([k.body], {type: 'text/plain'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = k.name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+};
+
+TorMgr.revokeClient = function(dir, name, client) {
+    layer.confirm('Revoke client "<b>' + TorMgr._esc(client) + '</b>"?<br><br>'
+        + 'Their key stops working immediately. If this is the last authorised client, '
+        + 'the service becomes reachable by anyone with the address again.',
+        {icon:3}, function(idx) {
+        layer.close(idx);
+        api('remove_client_auth', {dir: dir, client_name: client}, function(d) {
+            if (!d || !d.status) { layer.msg((d && d.msg) || 'Failed.', {icon:2, time:5000}); return; }
+            layer.msg(d.msg, {icon:1, time:4000});
+            TorMgr.showClientAuth(dir, name);
+        });
+    });
+};
 
 TorMgr.showVanityPanel = function() {
     TorMgr.hideCreateDomain();
@@ -1106,6 +1461,357 @@ TorMgr.loadLogs = function() {
             $('#log_source').text('');
         }
     });
+};
+
+// ===== WEB SERVER =====
+// ===== ONIONBALANCE =====
+// Off by default and presented as such: on a single host this adds moving parts
+// without removing the single point of failure. The panel says so rather than
+// letting someone switch it on expecting HA they will not get.
+TorMgr.loadBalance = function() {
+    api('onionbalance_status', {}, function(d) {
+        if (!d || !d.status) {
+            $('#ob_body').html('<div class="tor-alert tor-alert-danger">Failed to read OnionBalance status.</div>');
+            return;
+        }
+        if (d.installing) { TorMgr._renderBalanceInstalling(); return; }
+        if (!d.installed) { TorMgr._renderBalanceIntro(); return; }
+        TorMgr._renderBalance(d);
+    });
+};
+
+TorMgr._renderBalanceIntro = function() {
+    var h = '<div class="tor-card" style="margin-bottom:12px;">';
+    h += '<p style="font-size:13px;line-height:1.65;margin:0 0 10px;">'
+       + '<b>OnionBalance</b> publishes a single <code>.onion</code> address whose descriptor points at the '
+       + 'introduction points of several backend hidden services. Visitors reach a backend directly — the '
+       + 'daemon never carries traffic, so it is not a bottleneck.</p>';
+    h += '<div class="tor-alert tor-alert-warning" style="padding:8px 12px;font-size:12px;margin-bottom:10px;">'
+       + '&#9888; <b>Worth it only across several servers.</b> If every backend runs on this machine, the '
+       + 'machine is still a single point of failure and this only adds moving parts. Backends normally live '
+       + 'on other hosts, each with its own Tor Manager, and you paste their addresses here.</div>';
+    h += '<div style="font-size:12px;color:#666;line-height:1.65;margin-bottom:12px;">'
+       + '<b>Before you enable it, know that:</b><ul style="margin:6px 0 0 18px;padding:0;">'
+       + '<li>Your backend <code>.onion</code> addresses become <b>publicly discoverable</b> — anyone who fetches '
+       + 'the frontend descriptor can read them. That is inherent to how OnionBalance v3 works.</li>'
+       + '<li>Tor needs its control port open (loopback only, cookie authentication). The panel sets that up.</li>'
+       + '<li>The frontend service stops being served by this Tor directly, so only OnionBalance publishes it.</li>'
+       + '<li>The daemon is installed into its own venv under <code>/opt/onionbalance</code>. Nothing is added to '
+       + 'this plugin or to the system Python.</li></ul></div>';
+    h += '<button class="tor-btn tor-btn-primary tor-btn-sm" onclick="TorMgr.installBalance()">Install OnionBalance</button>';
+    h += '</div>';
+    $('#ob_body').html(h);
+};
+
+TorMgr._renderBalanceInstalling = function() {
+    $('#ob_body').html('<div class="tor-card"><div style="font-weight:600;margin-bottom:8px;">'
+        + '<span class="tor-spin"></span> Installing OnionBalance...</div>'
+        + '<pre id="ob_install_log" style="background:#1e1e1e;color:#d4d4d4;padding:10px;border-radius:4px;'
+        + 'font-size:11px;max-height:320px;overflow:auto;margin:0;white-space:pre-wrap;"></pre></div>');
+    TorMgr._pollBalanceInstall();
+};
+
+TorMgr._pollBalanceInstall = function() {
+    api('onionbalance_install_progress', {}, function(d) {
+        if (!d || !d.status) return;
+        var el = document.getElementById('ob_install_log');
+        if (el) { el.textContent = d.log || ''; el.scrollTop = el.scrollHeight; }
+        if (d.running) { setTimeout(TorMgr._pollBalanceInstall, 2000); return; }
+        if (d.failed) { layer.msg('Installation failed — see the log.', {icon:2, time:6000}); return; }
+        layer.msg('OnionBalance installed.', {icon:1, time:3000});
+        TorMgr.loadBalance();
+    });
+};
+
+TorMgr.installBalance = function() {
+    layer.confirm('Install OnionBalance into <code>/opt/onionbalance</code>?<br><br>'
+        + 'This creates a virtualenv and installs the daemon with pip. Nothing is started or '
+        + 'reconfigured yet — Tor and your hidden services are untouched.', {icon:3}, function(idx) {
+        layer.close(idx);
+        api('install_onionbalance', {}, function(d) {
+            if (!d || !d.status) { layer.msg((d && d.msg) || 'Failed.', {icon:2, time:5000}); return; }
+            TorMgr._renderBalanceInstalling();
+        });
+    });
+};
+
+TorMgr._renderBalance = function(d) {
+    var c = d.tor_control || {};
+    var h = '';
+
+    if (c.exposed) {
+        h += '<div class="tor-alert tor-alert-danger" style="padding:8px 12px;font-size:12px;margin-bottom:10px;">'
+           + '&#10007; <b>torrc has a control port that is not loopback-only</b> (<code>' + TorMgr._esc(c.control_port)
+           + '</code>). Anyone who can reach it controls Tor completely, including reading your hidden service '
+           + 'keys. Fix that before going further.</div>';
+    } else if (!c.listening) {
+        h += '<div class="tor-alert tor-alert-warning" style="padding:8px 12px;font-size:12px;margin-bottom:10px;">'
+           + '&#9888; Tor is not listening on a control port, which OnionBalance needs. '
+           + '<button class="tor-btn tor-btn-primary tor-btn-sm" style="margin-left:6px;" '
+           + 'onclick="TorMgr.enableControlPort()">Enable control port</button>'
+           + '<div style="margin-top:4px;color:#777;">Adds <code>ControlPort 127.0.0.1:9051</code> and '
+           + '<code>CookieAuthentication 1</code>, then restarts Tor — which briefly interrupts every hidden '
+           + 'service on this host.</div></div>';
+    }
+
+    h += '<div class="tor-card" style="margin-bottom:12px;">';
+    h += '<div class="tor-card-title">Frontend (the address visitors use)</div>';
+    if (d.frontend) {
+        h += '<div class="tor-card-value" style="font-family:\'Courier New\',monospace;font-size:13px;">'
+           + TorMgr._esc(d.frontend) + '</div>';
+    } else {
+        h += '<div style="font-size:12px;color:#666;margin:6px 0 8px;">Pick one of this host\'s hidden services. '
+           + 'Its address is kept, so visitors carry on using the same <code>.onion</code>. It is removed from '
+           + '<code>torrc</code> at the same time — otherwise this Tor and OnionBalance would both publish '
+           + 'descriptors for it and fight. Its keys stay on disk, so the move can be undone.</div>';
+        h += '<div style="display:flex;gap:6px;"><select id="ob_frontend_pick" class="tor-config-input" style="flex:1;">'
+           + '<option value="">Loading services...</option></select>'
+           + '<button class="tor-btn tor-btn-primary tor-btn-sm" onclick="TorMgr.setBalanceFrontend()">Use as frontend</button></div>';
+    }
+    h += '</div>';
+
+    h += '<div class="tor-card" style="margin-bottom:12px;">';
+    h += '<div class="tor-card-title">Backends (' + (d.instances || []).length + ')</div>';
+    if ((d.instances || []).length) {
+        h += '<table class="tor-table" style="width:100%;margin:6px 0;"><tbody>';
+        d.instances.forEach(function(a) {
+            h += '<tr><td style="padding:5px 4px;font-family:\'Courier New\',monospace;font-size:12px;word-break:break-all;">'
+               + TorMgr._esc(a) + '</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;">'
+               + '<button class="tor-btn tor-btn-danger tor-btn-sm" onclick="TorMgr.removeBalanceBackend(\'' + TorMgr._esc(a) + '\')">Remove</button>'
+               + '</td></tr>';
+        });
+        h += '</tbody></table>';
+    } else {
+        h += '<div style="font-size:12px;color:#999;margin:6px 0;">None yet. With no backends the daemon has '
+           + 'nothing to publish and the frontend address goes dark, so it will refuse to start.</div>';
+    }
+    h += '<div style="display:flex;gap:6px;margin-top:6px;">'
+       + '<input type="text" id="ob_backend_addr" class="tor-config-input" style="flex:1;font-family:\'Courier New\',monospace;" '
+       + 'placeholder="backend .onion address (56 characters + .onion)">'
+       + '<button class="tor-btn tor-btn-success tor-btn-sm" onclick="TorMgr.addBalanceBackend()">Add</button></div>';
+    h += '<div style="font-size:11px;color:#999;margin-top:4px;">These are normally hidden services on other '
+       + 'servers, each serving the same site.</div>';
+    h += '</div>';
+
+    h += '<div class="tor-card">';
+    h += '<div class="tor-card-title">Daemon</div>';
+    h += '<div style="margin:6px 0;">' + (d.running
+        ? '<span class="tor-badge tor-badge-green">Running</span>'
+        : '<span class="tor-badge tor-badge-gray">Stopped</span>')
+        + ' <span class="tor-badge ' + (d.enabled ? 'tor-badge-green' : 'tor-badge-gray') + '">'
+        + (d.enabled ? 'Starts on boot' : 'Not on boot') + '</span>'
+        + (d.version ? ' <span style="color:#777;font-size:12px;">v' + TorMgr._esc(d.version) + '</span>' : '') + '</div>';
+    h += '<div class="tor-btn-group" style="margin-top:6px;">';
+    ['start', 'stop', 'restart', 'enable', 'disable'].forEach(function(a) {
+        h += '<button class="tor-btn tor-btn-outline tor-btn-sm" onclick="TorMgr.balanceService(\'' + a + '\')">'
+           + a.charAt(0).toUpperCase() + a.slice(1) + '</button>';
+    });
+    h += '<button class="tor-btn tor-btn-outline tor-btn-sm" onclick="TorMgr.balanceLogs()">&#128203; Logs</button>';
+    h += '</div>';
+    h += '<pre id="ob_logs" style="display:none;background:#1e1e1e;color:#d4d4d4;padding:10px;border-radius:4px;'
+       + 'font-size:11px;max-height:300px;overflow:auto;margin:10px 0 0;white-space:pre-wrap;"></pre>';
+    h += '</div>';
+
+    $('#ob_body').html(h);
+    if (!d.frontend) TorMgr._fillFrontendPicker();
+};
+
+TorMgr._fillFrontendPicker = function() {
+    api('list_domains', {}, function(d) {
+        var opts = '<option value="">Select a hidden service...</option>';
+        ((d && d.domains) || []).forEach(function(dm) {
+            if (dm.hostname) {
+                opts += '<option value="' + TorMgr._esc(dm.dir) + '">' + TorMgr._esc(dm.name)
+                      + ' — ' + TorMgr._esc(dm.hostname) + '</option>';
+            }
+        });
+        $('#ob_frontend_pick').html(opts);
+    });
+};
+
+TorMgr.enableControlPort = function() {
+    layer.confirm('Enable Tor control port on <code>127.0.0.1:9051</code> with cookie authentication?<br><br>'
+        + '<span style="color:#c62828;">&#9888; Tor is restarted, which briefly interrupts <b>every</b> hidden '
+        + 'service on this host.</span>', {icon:3}, function(idx) {
+        layer.close(idx);
+        layer.msg('Updating torrc and restarting Tor...', {icon:16, time:40000, shade:.3});
+        api('enable_tor_control_port', {}, function(d) {
+            layer.closeAll();
+            if (!d || !d.status) { layer.alert(TorMgr._esc((d && d.msg) || 'Failed.'), {icon:2}); return; }
+            layer.msg(d.msg, {icon:1, time:5000});
+            TorMgr.loadBalance();
+        }, 60000);
+    });
+};
+
+TorMgr.setBalanceFrontend = function() {
+    var dir = $('#ob_frontend_pick').val();
+    if (!dir) { layer.msg('Pick a hidden service first.', {icon:0}); return; }
+    layer.confirm('Use this service as the OnionBalance frontend?<br><br>'
+        + 'It is removed from <code>torrc</code> so that only OnionBalance publishes its address, and Tor is '
+        + 'restarted. Its keys stay on disk and you can put it back from the Domains tab.<br><br>'
+        + '<span style="color:#c62828;">&#9888; Until the daemon is running with at least one backend, that '
+        + 'address will not resolve.</span>', {icon:3, area:'460px'}, function(idx) {
+        layer.close(idx);
+        layer.msg('Setting up the frontend...', {icon:16, time:40000, shade:.3});
+        api('set_onionbalance_frontend', {dir: dir}, function(d) {
+            layer.closeAll();
+            if (!d || !d.status) { layer.alert(TorMgr._esc((d && d.msg) || 'Failed.'), {icon:2, title:'Failed'}); return; }
+            layer.alert(TorMgr._esc(d.msg), {icon:1, title:'Frontend Set'});
+            TorMgr.loadBalance();
+        }, 60000);
+    });
+};
+
+TorMgr.addBalanceBackend = function() {
+    var addr = ($('#ob_backend_addr').val() || '').trim();
+    api('add_onionbalance_backend', {address: addr}, function(d) {
+        if (!d || !d.status) { layer.msg((d && d.msg) || 'Failed.', {icon:2, time:5000}); return; }
+        layer.msg(d.msg, {icon:1, time:3000});
+        TorMgr.loadBalance();
+    });
+};
+
+TorMgr.removeBalanceBackend = function(addr) {
+    layer.confirm('Remove backend <code>' + TorMgr._esc(addr) + '</code>?', {icon:3}, function(idx) {
+        layer.close(idx);
+        api('remove_onionbalance_backend', {address: addr}, function(d) {
+            if (!d || !d.status) { layer.msg((d && d.msg) || 'Failed.', {icon:2, time:5000}); return; }
+            layer.msg(d.msg, {icon:1, time:3000});
+            TorMgr.loadBalance();
+        });
+    });
+};
+
+TorMgr.balanceService = function(action) {
+    api('onionbalance_service', {action: action}, function(d) {
+        if (!d || !d.status) { layer.alert(TorMgr._esc((d && d.msg) || 'Failed.'), {icon:2}); return; }
+        layer.msg(d.msg, {icon:1, time:3000});
+        TorMgr.loadBalance();
+    });
+};
+
+TorMgr.balanceLogs = function() {
+    api('get_onionbalance_logs', {lines: 200}, function(d) {
+        var el = document.getElementById('ob_logs');
+        if (!el) return;
+        el.style.display = 'block';
+        el.textContent = (d && d.logs) || 'No logs.';
+        el.scrollTop = el.scrollHeight;
+    });
+};
+
+TorMgr.loadWebserverStatus = function() {
+    api('get_webserver_status', {}, function(d) {
+        if (!d.status) return;
+        var cur = d.current || 'unknown';
+        // Only offer the opposite of something we actually identified. With an
+        // unknown server the old code fell through to "switch to nginx", which on
+        // an Apache host read as a claim that nginx was already running.
+        var target = cur === 'nginx' ? 'apache' : (cur === 'apache' ? 'nginx' : '');
+        var badge = '<span class="tor-badge ' + (cur === 'unknown' ? 'tor-badge-gray' : 'tor-badge-green') + '">'
+                  + cur.toUpperCase() + '</span>';
+        if (d.mismatch) {
+            badge += ' <span class="tor-badge tor-badge-red" title="aaPanel\'s stored config disagrees with what is actually serving">'
+                   + '&#9888; panel says ' + String(d.panel_config).toUpperCase() + '</span>';
+        }
+        $('#ws_current').html(badge);
+        $('#ws_mismatch').remove();
+        if (d.mismatch) {
+            $('#ws_current').after(
+                '<div id="ws_mismatch" class="tor-alert tor-alert-warning" style="margin:8px 0;padding:8px 12px;font-size:12px;">'
+              + '&#9888; <b>' + $('<span>').text(String(d.detected).toUpperCase()).html() + '</b> is serving, but aaPanel has '
+              + '<b>' + $('<span>').text(d.panel_config).html() + '</b> stored in its config. Other parts of the panel read that row, '
+              + 'so they will behave as if the wrong server were active.'
+              + ' <button class="tor-btn tor-btn-primary tor-btn-sm" style="margin-left:6px;" onclick="TorMgr.syncPanelWebserver()">Fix panel config</button>'
+              + '</div>');
+        }
+        $('#ws_pma').html(d.phpmyadmin.installed ? '<span class="tor-badge tor-badge-green">Installed</span>' : '<span class="tor-badge tor-badge-red">Not Installed</span>');
+        $('#ws_nginx_info').html(d.nginx.installed ? '<span class="tor-badge tor-badge-green">v' + d.nginx.version + '</span>' : '<span class="tor-badge tor-badge-gray">Not Installed</span>');
+        $('#ws_apache_info').html(d.apache.installed ? '<span class="tor-badge tor-badge-green">v' + d.apache.version + '</span>' : '<span class="tor-badge tor-badge-gray">Not Installed</span>');
+        if (target) {
+            $('#ws_switch_target').text(target.charAt(0).toUpperCase() + target.slice(1));
+            $('#ws_switch_btn').data('target', target).prop('disabled', false);
+        } else {
+            $('#ws_switch_target').text('—');
+            $('#ws_switch_btn').removeData('target').prop('disabled', true);
+        }
+        if (d.switching) {
+            $('#ws_switch_area').hide();
+            $('#ws_progress_area').show();
+            TorMgr._pollSwitchStatus();
+        } else {
+            $('#ws_switch_area').show();
+            $('#ws_progress_area').hide();
+        }
+    });
+};
+
+TorMgr.syncPanelWebserver = function() {
+    layer.confirm('Update the web server stored in the aaPanel config to match what is actually running?<br><br>'
+        + 'This writes one row in the panel database. It does not start, stop or install anything.',
+        {icon:3}, function(idx) {
+        layer.close(idx);
+        api('sync_panel_webserver', {}, function(d) {
+            if (!d || !d.status) { layer.msg((d && d.msg) || 'Failed.', {icon:2, time:5000}); return; }
+            layer.msg(d.msg, {icon:1, time:4000});
+            TorMgr.loadWebserverStatus();
+        });
+    });
+};
+
+TorMgr.switchWebserver = function() {
+    var target = $('#ws_switch_btn').data('target');
+    if (!target) return;
+    layer.confirm('Switch web server to <b>' + target.toUpperCase() + '</b>?<br><br>This will install ' + target + ', reinstall phpMyAdmin, and stop the current server.<br>Sites may be briefly unavailable.', {icon:0, title:'Confirm Switch'}, function(idx) {
+        layer.close(idx);
+        $('#ws_switch_btn').prop('disabled', true);
+        api('switch_webserver', {target: target}, function(d) {
+            if (d.status) {
+                layer.msg(d.msg, {icon:1, time:3000});
+                $('#ws_switch_area').hide();
+                $('#ws_progress_area').show();
+                $('#ws_progress_log').text('Starting...');
+                TorMgr._pollSwitchStatus();
+            } else {
+                layer.msg(d.msg, {icon:2, time:3000});
+                $('#ws_switch_btn').prop('disabled', false);
+            }
+        });
+    });
+};
+
+TorMgr._switchPollTimer = null;
+TorMgr._pollSwitchStatus = function() {
+    if (TorMgr._switchPollTimer) clearInterval(TorMgr._switchPollTimer);
+    TorMgr._switchPollTimer = setInterval(function() {
+        api('switch_webserver_status', {}, function(d) {
+            if (!d.status) return;
+            if (d.running) {
+                $('#ws_progress_step').text(d.step || 'Switching...');
+                if (d.log) {
+                    $('#ws_progress_log').text(d.log);
+                    var el = document.getElementById('ws_progress_log');
+                    el.scrollTop = el.scrollHeight;
+                }
+            } else if (d.done) {
+                clearInterval(TorMgr._switchPollTimer);
+                if (d.success) {
+                    layer.msg('Web server switched successfully!', {icon:1, time:3000});
+                } else {
+                    layer.msg('Switch failed: ' + (d.msg || 'Unknown error'), {icon:2, time:5000});
+                }
+                $('#ws_progress_area').hide();
+                $('#ws_switch_area').show();
+                TorMgr.loadWebserverStatus();
+            } else {
+                clearInterval(TorMgr._switchPollTimer);
+                $('#ws_progress_area').hide();
+                $('#ws_switch_area').show();
+                TorMgr.loadWebserverStatus();
+            }
+        });
+    }, 3000);
 };
 
 // ===== UTILITY =====
