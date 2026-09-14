@@ -1,10 +1,10 @@
 #!/bin/bash
-# Tor Manager Plugin v3.4 - Install Script
+# Tor Manager Plugin v3.6 - Install Script
 
 PLUGIN_DIR="/www/server/panel/plugin/tor_manager"
 ICON_SOURCE="${PLUGIN_DIR}/icon.png"
 
-echo "Installing Tor Manager v3.4..."
+echo "Installing Tor Manager v3.6..."
 
 # Clear Python cache
 find "${PLUGIN_DIR}" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null
@@ -53,5 +53,5 @@ touch /www/server/panel/BTPanel/static/img/soft_ico/ico-tor_manager.png 2>/dev/n
 touch /www/server/panel/BTPanel/static/vite/images/soft-ico/ico-tor_manager.png 2>/dev/null
 
 echo ""
-echo "Tor Manager v3.4 installed. Restart aaPanel: bt restart"
+echo "Tor Manager v3.6 installed. Restart aaPanel: bt restart"
 echo "NOTE: Clear browser cache (Ctrl+Shift+R) to see new icon."

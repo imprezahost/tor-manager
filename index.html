@@ -638,6 +638,10 @@ TorMgr.loadDomains = function() {
                    + 'title="Rate-limit per Tor circuit in Onion Guard instead of lumping every visitor into one bucket" '
                    + 'onclick="TorMgr.toggleCircuitExport(\'' + dm.dir + '\',\'' + dm.name + '\',' + (dm.circuit_export ? 'false' : 'true') + ')">'
                    + '&#128260; Circuit limiting' + (dm.circuit_export ? ': ON' : '') + '</button>';
+                h += '<button class="tor-btn ' + (dm.dos_enabled ? 'tor-btn-success' : 'tor-btn-outline') + ' tor-btn-sm" '
+                   + 'title="Tor\'s own defences at the introduction point: rate limiting and proof of work" '
+                   + 'onclick="TorMgr.showDos(\'' + dm.dir + '\',\'' + dm.name + '\')">'
+                   + '&#128737; DoS defences' + (dm.dos_enabled ? ': ON' : '') + '</button>';
             }
             if (dm.hostname) {
                 if (dm.in_panel) {
@@ -886,6 +890,131 @@ var vanityPollTimer = null;
 var vanityJobId = null;
 var vanityStartTime = null;
 var vanityFoundKeysDir = '';
+
+// ===== NATIVE PROOF-OF-WORK DEFENCE =====
+// Tor's own defence, at the introduction point. Nothing here can take a service
+// offline, so unlike the circuit-export toggle it needs no outage warning --
+// the dialog is about explaining what the knobs do, not about the risk.
+TorMgr.showDos = function(dir, name) {
+    api('get_dos_defences', {dir: dir}, function(d) {
+        if (!d || !d.status) {
+            layer.msg((d && d.msg) || 'Failed to read defence status.', {icon:2, time:5000});
+            return;
+        }
+        function box(title, body) {
+            return '<div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px 12px;margin-bottom:12px;">'
+                 + '<div style="font-weight:600;font-size:13px;margin-bottom:6px;">' + title + '</div>' + body + '</div>';
+        }
+        function badge(on) {
+            return on ? '<span class="tor-badge tor-badge-green">Enabled</span>'
+                      : '<span class="tor-badge tor-badge-gray">Disabled</span>';
+        }
+        function fields(kind, cfg, rateLabel, burstLabel) {
+            return '<table style="width:100%;font-size:12px;margin:8px 0;"><tbody>'
+                 + '<tr><td style="padding:3px 6px 3px 0;white-space:nowrap;">Rate</td>'
+                 + '<td style="padding:3px 0;"><input type="number" id="' + kind + '_rate" class="tor-config-input" value="'
+                 + cfg.rate + '" min="1" style="width:100px;"></td>'
+                 + '<td style="padding:3px 0 3px 8px;color:#777;">' + rateLabel + ' (default ' + cfg.default_rate + ')</td></tr>'
+                 + '<tr><td style="padding:3px 6px 3px 0;white-space:nowrap;">Burst</td>'
+                 + '<td style="padding:3px 0;"><input type="number" id="' + kind + '_burst" class="tor-config-input" value="'
+                 + cfg.burst + '" min="1" style="width:100px;"></td>'
+                 + '<td style="padding:3px 0 3px 8px;color:#777;">' + burstLabel + ' (default ' + cfg.default_burst + ')</td></tr>'
+                 + '</tbody></table>';
+        }
+        function buttons(kind, on, canEnable) {
+            var h = '<div class="tor-btn-group">';
+            if (on) {
+                h += '<button class="tor-btn tor-btn-primary tor-btn-sm" onclick="TorMgr.setDos(\'' + dir + '\',\'' + name + '\',\'' + kind + '\',true)">Save</button>';
+                h += '<button class="tor-btn tor-btn-danger tor-btn-sm" onclick="TorMgr.setDos(\'' + dir + '\',\'' + name + '\',\'' + kind + '\',false)">Disable</button>';
+            } else if (canEnable) {
+                h += '<button class="tor-btn tor-btn-success tor-btn-sm" onclick="TorMgr.setDos(\'' + dir + '\',\'' + name + '\',\'' + kind + '\',true)">Enable</button>';
+            }
+            return h + '</div>';
+        }
+
+        var h = '<div style="padding:14px;font-size:13px;">';
+        h += '<p style="margin:0 0 12px;line-height:1.6;color:#555;">Two defences act at the '
+           + '<b>introduction point</b>, before a circuit to this server is ever built. They are not '
+           + 'the same trade-off, so they are shown separately.'
+           + (d.tor_version ? ' <span style="color:#999;">Tor ' + TorMgr._esc(d.tor_version) + '</span>' : '')
+           + '</p>';
+
+        // --- introduction-point rate limit: the safe one, so it comes first
+        var ib = '<div style="margin-bottom:6px;">' + badge(d.introdos.enabled) + '</div>';
+        ib += '<div style="font-size:12px;color:#555;line-height:1.6;">The introduction points drop '
+            + 'excess INTRODUCE2 cells for this service. <b>It asks nothing of the visitor</b> — no puzzle, '
+            + 'no extra software, no penalty for an old or slow client. Start here.</div>';
+        ib += fields('introdos', d.introdos, 'introductions accepted per second', 'how many it absorbs in a spike');
+        ib += buttons('introdos', d.introdos.enabled, true);
+        h += box('&#128737; Introduction-point rate limit <span style="font-weight:400;color:#2e7d32;">— recommended</span>', ib);
+
+        // --- proof of work: real cost, real history of breaking things
+        var pb = '<div style="margin-bottom:6px;">' + badge(d.pow.enabled) + '</div>';
+        if (!d.pow_module_available) {
+            pb += '<div class="tor-alert tor-alert-danger" style="padding:7px 10px;font-size:12px;margin-bottom:8px;">'
+                + '&#10007; This Tor build has no <code>pow</code> module. Check <code>tor --list-modules</code>.</div>';
+        }
+        pb += '<div class="tor-alert tor-alert-warning" style="padding:8px 10px;font-size:12px;margin-bottom:8px;">'
+            + '&#9888; <b>This one can lock visitors out.</b> Clients older than Tor 0.4.8 send zero-effort '
+            + 'introductions and are served last; low-end devices fall back to a solver an order of magnitude '
+            + 'slower and may give up before finishing. Under queue pressure the visitors squeezed out first are '
+            + 'the ones on old or slow software — not the attacker. Enabling this has caused real outages. '
+            + 'Turn the rate limit above on first, and only reach for this if it is not enough.</div>';
+        pb += '<div style="font-size:12px;color:#555;line-height:1.6;">Dormant while nothing is attacking: the '
+            + 'puzzle effort only rises as the introduction queue backs up, and falls again when the pressure stops.</div>';
+        pb += fields('pow', d.pow, 'rendezvous requests dispatched per second', 'absorbed before raising effort');
+        pb += '<div style="font-size:11px;color:#999;margin-bottom:8px;">Lower the rate and visitors are asked for '
+            + 'more work sooner. Raise it and more traffic reaches your backend before the defence bites.</div>';
+        pb += buttons('pow', d.pow.enabled, d.pow_module_available);
+        h += box('&#9889; Proof of work', pb);
+
+        h += '<div style="font-size:11px;color:#999;">Applying reloads Tor rather than restarting it, so other '
+           + 'hidden services stay connected. The change reaches clients when this service next publishes its '
+           + 'descriptor.</div>';
+        h += '</div>';
+
+        if (TorMgr._dosLayer !== null && TorMgr._dosLayer !== undefined) layer.close(TorMgr._dosLayer);
+        TorMgr._dosLayer = layer.open({
+            type: 1, title: 'Denial-of-Service Defences &mdash; ' + TorMgr._esc(name),
+            area: ['600px', 'auto'], content: h, shadeClose: true,
+            end: function() { TorMgr._dosLayer = null; }
+        });
+    });
+};
+
+TorMgr.setDos = function(dir, name, kind, enable) {
+    var args = {dir: dir, kind: kind, enabled: enable ? 'true' : 'false'};
+    if (enable) {
+        args.rate = $('#' + kind + '_rate').val();
+        args.burst = $('#' + kind + '_burst').val();
+    }
+    var apply = function() {
+        api('set_dos_defence', args, function(d) {
+            if (!d || !d.status) {
+                layer.alert(TorMgr._esc((d && d.msg) || 'Failed.'), {icon:2, title:'Defences'});
+                return;
+            }
+            if (TorMgr._dosLayer !== null && TorMgr._dosLayer !== undefined) {
+                layer.close(TorMgr._dosLayer); TorMgr._dosLayer = null;
+            }
+            layer.msg(d.msg, {icon:1, time:6000});
+            TorMgr.loadDomains();
+        }, 60000);
+    };
+    // Only proof of work can shut visitors out, so only it asks twice.
+    if (kind === 'pow' && enable) {
+        layer.confirm('Enable proof of work for "<b>' + TorMgr._esc(name) + '</b>"?<br><br>'
+            + 'Visitors on Tor clients older than 0.4.8, and on low-end devices, may be unable to reach '
+            + 'this service while the queue is under pressure. Enabling this has caused real outages.<br><br>'
+            + 'If you have not already enabled the introduction-point rate limit, do that first — it costs '
+            + 'your visitors nothing.', {icon:3, area:'460px'}, function(idx) {
+            layer.close(idx);
+            apply();
+        });
+    } else {
+        apply();
+    }
+};
 
 // ===== CIRCUIT EXPORT (per-circuit rate limiting) =====
 TorMgr.toggleCircuitExport = function(dir, name, enable) {
@@ -1490,14 +1619,29 @@ TorMgr._renderBalanceIntro = function() {
        + '&#9888; <b>Worth it only across several servers.</b> If every backend runs on this machine, the '
        + 'machine is still a single point of failure and this only adds moving parts. Backends normally live '
        + 'on other hosts, each with its own Tor Manager, and you paste their addresses here.</div>';
+    h += '<div class="tor-alert tor-alert-danger" style="padding:8px 12px;font-size:12px;margin-bottom:10px;">'
+       + '&#9888; <b>OnionBalance solves the Tor layer only.</b> It makes one address reach several '
+       + 'backends. It does <b>not</b> copy your site between them, and it does not replicate your '
+       + 'database or share your sessions and uploads. If the backends serve different content, '
+       + 'visitors get whichever one they land on.'
+       + '<div style="margin-top:6px;">'
+       + '<b>Easy:</b> a static site, or anything you can rsync or deploy from git.<br>'
+       + '<b>Work:</b> a CMS &mdash; you need database replication and shared media storage.<br>'
+       + '<b>Hard:</b> an application that writes locally &mdash; it has to be cluster-aware first.'
+       + '</div>'
+       + '<div style="margin-top:6px;">Sort that out before buying servers. This page cannot do it for you.</div>'
+       + '</div>';
     h += '<div style="font-size:12px;color:#666;line-height:1.65;margin-bottom:12px;">'
-       + '<b>Before you enable it, know that:</b><ul style="margin:6px 0 0 18px;padding:0;">'
+       + '<b>Also worth knowing:</b><ul style="margin:6px 0 0 18px;padding:0;">'
        + '<li>Your backend <code>.onion</code> addresses become <b>publicly discoverable</b> — anyone who fetches '
        + 'the frontend descriptor can read them. That is inherent to how OnionBalance v3 works.</li>'
        + '<li>Tor needs its control port open (loopback only, cookie authentication). The panel sets that up.</li>'
        + '<li>The frontend service stops being served by this Tor directly, so only OnionBalance publishes it.</li>'
        + '<li>The daemon is installed into its own venv under <code>/opt/onionbalance</code>. Nothing is added to '
-       + 'this plugin or to the system Python.</li></ul></div>';
+       + 'this plugin or to the system Python.</li>'
+       + '<li>The daemon carries no traffic, but it does republish the descriptor. If it stops, the address '
+       + 'keeps working for a few hours and then goes dark &mdash; even with every backend healthy. Watch that '
+       + 'process at least as closely as you watch the site.</li></ul></div>';
     h += '<button class="tor-btn tor-btn-primary tor-btn-sm" onclick="TorMgr.installBalance()">Install OnionBalance</button>';
     h += '</div>';
     $('#ob_body').html(h);

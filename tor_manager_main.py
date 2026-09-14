@@ -1,5 +1,5 @@
 # coding: utf-8
-# Tor Service Manager - aaPanel Plugin v3.4
+# Tor Service Manager - aaPanel Plugin v3.6
 
 import sys
 import os
@@ -64,7 +64,12 @@ class tor_manager_main:
         return os.path.join(self._work_dir(), name)
 
     def _purge_legacy_tmp(self):
-        """Remove scratch files that earlier versions wrote to /tmp."""
+        """Remove scratch left in /tmp by versions before this one.
+
+        Chiefly the vanity output directories: an upgrade should not leave old
+        onion secret keys readable in /tmp forever just because the new code
+        stopped writing there.
+        """
         self._exec('rm -rf /tmp/tor_vanity_* /tmp/mkp224o_bench_* 2>/dev/null')
         self._exec('rm -f /tmp/.tor_update.sh /tmp/.tor_update_status /tmp/.tor_update_log '
                    '/tmp/.webserver_switch.sh /tmp/.webserver_switch_status '
@@ -165,8 +170,9 @@ class tor_manager_main:
         try: return os.path.getsize(path)
         except Exception: return 0
 
-    # Never rendered into the panel response: a key must not reach an HTTP
-    # response, or the browser cache, just because it happens to decode as text.
+    # Never rendered into the panel response. The old `file -b` probe happened to
+    # classify these as binary; keep that explicit so a key cannot end up in an
+    # HTTP response (and the browser's cache) just because it decoded as text.
     __opaque_files = ('hs_ed25519_secret_key', 'hs_ed25519_public_key',
                       'hs_secret_key', 'hs_public_key', 'private_key')
 
@@ -692,6 +698,10 @@ class tor_manager_main:
         info['client_count'] = count
         info['restricted'] = count > 0
         info['circuit_export'] = self._circuit_state(os.path.realpath(hs_dir))['enabled']
+        real = os.path.realpath(hs_dir)
+        info['pow_enabled'] = self._defence_state(real, 'pow')['enabled']
+        info['introdos_enabled'] = self._defence_state(real, 'introdos')['enabled']
+        info['dos_enabled'] = info['pow_enabled'] or info['introdos_enabled']
         return info
 
     def _site_exists_in_panel(self, hostname):
@@ -1473,6 +1483,248 @@ class tor_manager_main:
                 return start, i
         return (start, len(lines)) if start is not None else (None, None)
 
+    # --- NATIVE PROOF-OF-WORK DEFENCE ---
+    #
+    # Tor has carried a proof-of-work defence for onion services since 0.4.8. It
+    # runs at the introduction point, before a rendezvous circuit is built, so
+    # attack traffic is turned away before it reaches this host at all. It is
+    # dormant while the service is healthy -- a visitor pays nothing -- and the
+    # effort only climbs as the introduction queue backs up.
+    #
+    # This is a different layer from an application-level challenge page, which
+    # can only act once a request has already crossed the Tor network, the web
+    # server and the application.
+    #
+    # It is NOT free of risk. Clients older than 0.4.8 send zero-effort
+    # introductions and are de-prioritised, and low-end devices fall back to an
+    # interpreted solver that is an order of magnitude slower -- so under queue
+    # pressure the visitors squeezed out first are the ones on old or slow
+    # software. Enabling it has caused real outages. The introduction-point rate
+    # limit below (IntroDoSDefense) asks nothing of the visitor at all and is the
+    # safer first move.
+
+    __pow_enabled_directive = 'HiddenServicePoWDefensesEnabled'
+    __pow_rate_directive    = 'HiddenServicePoWQueueRate'
+    __pow_burst_directive   = 'HiddenServicePoWQueueBurst'
+    __introdos_enabled_directive = 'HiddenServiceEnableIntroDoSDefense'
+    __introdos_rate_directive    = 'HiddenServiceEnableIntroDoSRatePerSec'
+    __introdos_burst_directive   = 'HiddenServiceEnableIntroDoSBurstPerSec'
+    __introdos_default_rate      = 25
+    __introdos_default_burst     = 200
+
+    __pow_default_rate      = 250
+    __pow_default_burst     = 2500
+
+    def _insert_into_hs_block(self, block, directives):
+        """Place directives after the last line that really belongs to a service.
+
+        A block returned by _hs_block_range runs up to the next HiddenServiceDir,
+        so it also carries the blank line and the comment introducing the next
+        service. Appending at the end would park the directives under someone
+        else's heading -- still correct to Tor, which attributes them to the
+        preceding HiddenServiceDir, but misleading to anyone editing by hand and
+        fragile if the blocks are ever reordered. For the last service in the
+        file it would also swallow the trailing newline.
+        """
+        insert_at = len(block)
+        for i in range(len(block) - 1, -1, -1):
+            s = block[i].strip()
+            if s and not s.startswith('#'):
+                insert_at = i + 1
+                break
+        return block[:insert_at] + list(directives) + block[insert_at:]
+
+    # Both defences are three torrc directives with the same shape, so they share
+    # one implementation. They are not interchangeable: the introduction-point
+    # rate limit is applied by the introduction points and costs the visitor
+    # nothing, while proof of work asks the visitor's own client to do the work.
+    __defences = {
+        'introdos': {
+            'enabled': 'HiddenServiceEnableIntroDoSDefense',
+            'rate':    'HiddenServiceEnableIntroDoSRatePerSec',
+            'burst':   'HiddenServiceEnableIntroDoSBurstPerSec',
+            'default_rate': 25, 'default_burst': 200,
+            'needs_module': False,
+            'label': 'Introduction-point rate limit',
+        },
+        'pow': {
+            'enabled': 'HiddenServicePoWDefensesEnabled',
+            'rate':    'HiddenServicePoWQueueRate',
+            'burst':   'HiddenServicePoWQueueBurst',
+            'default_rate': 250, 'default_burst': 2500,
+            'needs_module': True,
+            'label': 'Proof-of-work defence',
+        },
+    }
+
+    def _defence_state(self, hs_dir, kind):
+        """Read one defence's settings from a service's torrc block."""
+        spec = self.__defences[kind]
+        state = {'enabled': False, 'rate': None, 'burst': None}
+        ok, content, _ = self._read_file('/etc/tor/torrc')
+        if not ok:
+            return state
+        lines = content.split('\n')
+        start, end = self._hs_block_range(lines, hs_dir)
+        if start is None:
+            return state
+        for line in lines[start:end]:
+            st = line.strip()
+            if not st or st.startswith('#'):
+                continue
+            parts = st.split()
+            if parts[0] == spec['enabled'] and len(parts) > 1:
+                state['enabled'] = parts[1] == '1'
+            elif parts[0] == spec['rate'] and len(parts) > 1:
+                try: state['rate'] = int(parts[1])
+                except ValueError: pass
+            elif parts[0] == spec['burst'] and len(parts) > 1:
+                try: state['burst'] = int(parts[1])
+                except ValueError: pass
+        return state
+
+    def _pow_state(self, hs_dir):
+        """Shape the domain list expects."""
+        st = self._defence_state(hs_dir, 'pow')
+        return {'enabled': st['enabled'], 'queue_rate': st['rate'], 'queue_burst': st['burst']}
+
+    def _tor_has_pow(self):
+        """Whether this Tor binary was built with the pow module."""
+        out, err, _ = self._run(['tor', '--list-modules'], timeout=15)
+        return 'pow: yes' in (out or '') + (err or '')
+
+    def get_dos_defences(self, args):
+        """Report both introduction-layer defences for one hidden service."""
+        hs_dir, err = self._resolve_hs_dir(args.get('dir', ''))
+        if not hs_dir:
+            return json.dumps({'status': False, 'msg': err})
+        out = {'status': True, 'dir': hs_dir, 'tor_version': self._get_tor_version(),
+               'pow_module_available': self._tor_has_pow()}
+        for kind, spec in self.__defences.items():
+            st = self._defence_state(hs_dir, kind)
+            out[kind] = {
+                'enabled': st['enabled'],
+                'rate': st['rate'] if st['rate'] is not None else spec['default_rate'],
+                'burst': st['burst'] if st['burst'] is not None else spec['default_burst'],
+                'configured_rate': st['rate'], 'configured_burst': st['burst'],
+                'default_rate': spec['default_rate'], 'default_burst': spec['default_burst'],
+            }
+        return json.dumps(out)
+
+    def get_pow_status(self, args):
+        """Kept for callers that only care about proof of work."""
+        both = json.loads(self.get_dos_defences(args))
+        if not both.get('status'):
+            return json.dumps(both)
+        p = both['pow']
+        return json.dumps({'status': True, 'dir': both['dir'], 'enabled': p['enabled'],
+                           'queue_rate': p['configured_rate'], 'queue_burst': p['configured_burst'],
+                           'module_available': both['pow_module_available'],
+                           'default_rate': p['default_rate'], 'default_burst': p['default_burst'],
+                           'tor_version': both['tor_version']})
+
+    def set_dos_defence(self, args):
+        """Turn one introduction-layer defence on or off for a hidden service."""
+        kind = (args.get('kind', '') or '').strip().lower()
+        if kind not in self.__defences:
+            return json.dumps({'status': False, 'msg': 'Unknown defence.'})
+        spec = self.__defences[kind]
+
+        hs_dir, err = self._resolve_hs_dir(args.get('dir', ''))
+        if not hs_dir:
+            return json.dumps({'status': False, 'msg': err})
+        enable = str(args.get('enabled', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
+
+        if enable and spec['needs_module'] and not self._tor_has_pow():
+            return json.dumps({'status': False, 'msg':
+                'This Tor binary was built without the pow module, so the defence cannot be '
+                'enabled. Check "tor --list-modules"; a build reporting "pow: no" needs to be '
+                'replaced before this will do anything.'})
+
+        def positive(name, raw, fallback):
+            if raw in (None, ''):
+                return fallback, None
+            try:
+                v = int(raw)
+            except (TypeError, ValueError):
+                return None, '%s must be a whole number.' % name
+            if not (1 <= v <= 1000000):
+                return None, '%s must be between 1 and 1000000.' % name
+            return v, None
+
+        rate, rerr = positive('Rate', args.get('rate', args.get('queue_rate')), spec['default_rate'])
+        if rate is None:
+            return json.dumps({'status': False, 'msg': rerr})
+        burst, berr = positive('Burst', args.get('burst', args.get('queue_burst')), spec['default_burst'])
+        if burst is None:
+            return json.dumps({'status': False, 'msg': berr})
+        if enable and burst < rate:
+            return json.dumps({'status': False, 'msg':
+                'Burst must be at least the rate, otherwise the service cannot absorb even one '
+                'second of traffic before the defence starts biting.'})
+
+        torrc_path = '/etc/tor/torrc'
+        ok, content, _ = self._read_file(torrc_path)
+        if not ok:
+            return json.dumps({'status': False, 'msg': 'Cannot read torrc.'})
+        lines = content.split('\n')
+        start, end = self._hs_block_range(lines, hs_dir)
+        if start is None:
+            return json.dumps({'status': False, 'msg': 'Service block not found in torrc.'})
+
+        before = self._defence_state(hs_dir, kind)
+        if (before['enabled'] == enable and
+                (not enable or (before['rate'] == rate and before['burst'] == burst))):
+            return json.dumps({'status': True, 'unchanged': True, 'enabled': enable,
+                               'msg': 'Already %s with these settings.'
+                                      % ('enabled' if enable else 'disabled')})
+
+        names = (spec['enabled'], spec['rate'], spec['burst'])
+        new_block = []
+        for line in lines[start:end]:
+            st = line.strip()
+            if st and not st.startswith('#') and st.split()[0] in names:
+                continue
+            new_block.append(line)
+        if enable:
+            new_block = self._insert_into_hs_block(new_block, [
+                '%s 1' % spec['enabled'],
+                '%s %d' % (spec['rate'], rate),
+                '%s %d' % (spec['burst'], burst),
+            ])
+
+        bak, berr2 = self._backup_file(torrc_path)
+        if not bak:
+            return json.dumps({'status': False, 'msg': 'Backup failed, torrc not modified: ' + berr2})
+        wok, werr = self._write_file(torrc_path, '\n'.join(lines[:start] + new_block + lines[end:]))
+        if not wok:
+            return json.dumps({'status': False, 'msg': 'Failed to write torrc: ' + werr})
+
+        vc = json.loads(self.verify_config())
+        if not vc.get('status'):
+            self._write_file(torrc_path, content)
+            return json.dumps({'status': False,
+                               'msg': 'Tor rejected the new torrc, so it was rolled back: '
+                                      + (vc.get('output', '') or '').strip()[-300:]})
+
+        reloaded = json.loads(self.reload_tor())
+        msg = ('%s enabled (rate %d/s, burst %d).' % (spec['label'], rate, burst)
+               if enable else '%s disabled.' % spec['label'])
+        if reloaded.get('status'):
+            msg += (' Tor reloaded; it takes effect when the service next publishes its '
+                    'descriptor, which is a matter of minutes.')
+        else:
+            msg += ' Tor could not be reloaded automatically - reload it from the Control tab.'
+        return json.dumps({'status': True, 'kind': kind, 'enabled': enable,
+                           'rate': rate if enable else None, 'burst': burst if enable else None,
+                           'backup': bak, 'reloaded': bool(reloaded.get('status')), 'msg': msg})
+
+    def set_pow_defenses(self, args):
+        """Kept for callers that only touch proof of work."""
+        a = dict(args or {})
+        a['kind'] = 'pow'
+        return self.set_dos_defence(a)
+
     def _circuit_state(self, hs_dir):
         """Report whether hs_dir exports circuit ids, and what it was pointed at."""
         ok, content, _ = self._read_file('/etc/tor/torrc')
@@ -1560,7 +1812,8 @@ class tor_manager_main:
                     continue
                 else:
                     new_block.append(l)
-            new_block.append('%s haproxy' % self.__circuit_directive)
+            new_block = self._insert_into_hs_block(
+                new_block, ['%s haproxy' % self.__circuit_directive])
         else:
             restore = {}
             for pair in (state.get('original') or '').split(','):
@@ -1759,8 +2012,8 @@ echo "RESULT:OK"
     def _vanity_paths(self, job_id):
         """Return (out_dir, log_file, pid_file) for a job id, or None if malformed.
 
-        job_id arrives from the request, so it is pinned to digits before it is
-        used to build any path.
+        job_id arrives from the request and used to be pasted straight into
+        `cat "..."` / `ls -d "..."`, so it is pinned to digits here.
         """
         job_id = (job_id or '').strip()
         if not self.__vanity_job_re.match(job_id):
@@ -2146,7 +2399,8 @@ echo ""
 # Step 2: Update aaPanel config to use new web server
 echo "STEP 2: Updating aaPanel config..."
 # Via the sqlite3 module, not the CLI: the CLI is not part of an aaPanel install
-# and is absent on plenty of hosts, where this UPDATE would silently do nothing.
+# and is absent on plenty of hosts, where this UPDATE silently did nothing and
+# left the panel believing the old web server was still active.
 python3 -c "import sqlite3,sys;c=sqlite3.connect('/www/server/panel/data/default.db',timeout=10);c.execute('UPDATE config SET webserver=? WHERE id=1',(sys.argv[1],));c.commit();c.close()" '%(target)s'
 if [ $? -ne 0 ]; then
     echo "RESULT:FAIL:Could not update the panel config row"

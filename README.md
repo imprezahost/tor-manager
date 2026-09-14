@@ -53,6 +53,13 @@ Either plugin works on its own. Installing both gives you a complete pipeline: p
 - The private key is shown once and never stored on the server; download it as the `.auth_private` file the client installs in their `ClientOnionAuthDir`
 - Adding the first client restricts the service immediately; revoking the last one makes it public again — both are stated in the UI before you confirm
 
+### Denial-of-service defences
+
+- Manage both of Tor's introduction-point defences per service from **Domains → DoS defences**
+- **Introduction-point rate limit** — applied by the introduction points, asks nothing of the visitor; the one to try first
+- **Proof of work** — dormant until the queue backs up, but it can lock out visitors on old Tor clients or slow devices, so it warns and confirms before enabling
+- Rate and burst tunable for each, applied with a reload rather than a restart
+
 ### Per-circuit rate limiting
 
 - One click per service to add `HiddenServiceExportCircuitID haproxy` and repoint it at Onion Guard's circuit listener
@@ -130,7 +137,7 @@ Removing the plugin **does not** uninstall Tor itself, delete your `torrc`, or r
 | Tab | What it does |
 |---|---|
 | **Status** | Tor version, service state, hidden-service summary, distro info |
-| **Domains** | Create, list and remove hidden services; generate vanity `.onion` addresses; restore one from a key backup; manage client authorization; toggle per-circuit rate limiting |
+| **Domains** | Create, list and remove hidden services; generate vanity `.onion` addresses; restore one from a key backup; manage client authorization; enable Tor's proof-of-work defence; toggle per-circuit rate limiting |
 | **Control** | Start / stop / restart / reload Tor; enable / disable on boot; verify config |
 | **Config** | Inline editor for every `torrc` directive, organised by category |
 | **Editor** | Direct file access to `torrc`, logs and hidden-service keys (read-only where appropriate) |
